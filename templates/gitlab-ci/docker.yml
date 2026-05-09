@@ -1,0 +1,45 @@
+# Docker build + push to GitLab Container Registry.
+# Produces an image tagged with both the commit SHA and 'latest'.
+#
+# GitLab provides these variables automatically:
+#   CI_REGISTRY          = registry.gitlab.com
+#   CI_REGISTRY_IMAGE    = registry.gitlab.com/<namespace>/<project>
+#   CI_REGISTRY_USER     = gitlab-ci-token
+#   CI_REGISTRY_PASSWORD = $CI_JOB_TOKEN
+
+docker:build:
+  stage: build
+  image: docker:24
+  services:
+    - name: docker:24-dind
+      alias: docker
+  variables:
+    IMAGE_SHA: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+    IMAGE_BRANCH: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+    DOCKER_BUILDKIT: "1"
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - |
+      docker build \
+        --cache-from $IMAGE_LATEST \
+        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        -t $IMAGE_SHA \
+        -t $IMAGE_LATEST \
+        -t $IMAGE_BRANCH \
+        .
+    - docker push $IMAGE_SHA
+    - docker push $IMAGE_LATEST
+    - docker push $IMAGE_BRANCH
+    - echo "IMAGE_SHA=${IMAGE_SHA}" > build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "develop"

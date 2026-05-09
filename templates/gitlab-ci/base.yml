@@ -1,0 +1,47 @@
+# Base pipeline skeleton — include this in project-specific pipelines.
+# Stages run in order; later stages only run if earlier ones pass.
+stages:
+  - validate    # lint, type-check, format
+  - test        # unit + integration tests
+  - security    # SAST, secret detection, dependency scan
+  - build       # docker image build + push
+  - provision   # terraform plan + apply (infrastructure)
+  - deploy      # update gitops manifests → ArgoCD syncs
+  - dast        # DAST against deployed staging URL
+  - promote     # manual gate: staging → production
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  TF_IN_AUTOMATION: "true"
+
+# Cache pip/npm between jobs on the same runner
+.cache_python: &cache_python
+  cache:
+    key: python-$CI_COMMIT_REF_SLUG
+    paths: [.pip-cache/]
+    policy: pull-push
+
+.cache_node: &cache_node
+  cache:
+    key: node-$CI_COMMIT_REF_SLUG
+    paths: [node_modules/]
+    policy: pull-push
+
+# Reusable rules
+.only_main: &only_main
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+.only_develop: &only_develop
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+.only_staging: &only_staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+
+.mr_and_main: &mr_and_main
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"

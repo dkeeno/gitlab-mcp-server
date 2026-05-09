@@ -1,0 +1,69 @@
+# GitOps deployment via ArgoCD.
+# This job updates the image tag in the gitops/ manifests directory.
+# ArgoCD detects the change and syncs automatically (within ~3 minutes).
+#
+# How it works:
+#   1. CI builds + pushes a new image tagged with $CI_COMMIT_SHORT_SHA
+#   2. This job updates gitops/environments/<env>/values.yaml with the new tag
+#   3. The change is committed back to this repo (skipping CI with [skip ci])
+#   4. ArgoCD polls the repo and detects the updated tag
+#   5. ArgoCD applies the Helm chart with the new image → rolling update
+#
+# Required CI/CD variables:
+#   GITOPS_TOKEN    (GitLab project access token with write_repository scope)
+#   CI_REGISTRY_IMAGE (auto-provided by GitLab for Container Registry)
+
+.gitops_deploy: &gitops_deploy
+  image: alpine/git:latest
+  script:
+    - git config --global user.email "ci@gitlab-devops"
+    - git config --global user.name "GitLab CI"
+    - |
+      git clone \
+        "https://oauth2:${GITOPS_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" \
+        gitops-repo
+    - cd gitops-repo
+    - |
+      # Update the image tag for this environment
+      sed -i "s|tag:.*|tag: \"${CI_COMMIT_SHORT_SHA}\"|g" \
+        "gitops/environments/${TARGET_ENV}/values.yaml"
+    - git add -A
+    - |
+      git diff --staged --quiet || \
+      git commit -m "ci(${TARGET_ENV}): update image to ${CI_COMMIT_SHORT_SHA} [skip ci]"
+    - git push
+    - echo "Deployed ${CI_COMMIT_SHORT_SHA} to ${TARGET_ENV}. ArgoCD will sync within 3 minutes."
+
+deploy:staging:
+  stage: deploy
+  <<: *gitops_deploy
+  variables:
+    TARGET_ENV: staging
+  environment:
+    name: staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+deploy:production:
+  stage: deploy
+  <<: *gitops_deploy
+  variables:
+    TARGET_ENV: production
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+promote:staging-to-production:
+  stage: promote
+  image: alpine:latest
+  script:
+    - echo "Manual promotion approved. Production deploy will trigger on next push to main."
+  when: manual
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+  needs:
+    - deploy:staging

@@ -1,0 +1,80 @@
+# ArgoCD bootstrap — runs ONCE to install ArgoCD into the EKS cluster via Helm.
+# Triggered manually after Terraform has provisioned the cluster.
+#
+# Required CI/CD variables:
+#   KUBECONFIG_B64          (base64-encoded kubeconfig for the cluster)
+#   ARGOCD_NAMESPACE        (default: argocd)
+#   ARGOCD_HELM_VERSION     (default: 7.x)
+#   GITLAB_TOKEN            (deploy key for ArgoCD to pull from this repo — read-only scope)
+#   GITOPS_REPO_URL         (this repo's HTTPS URL)
+#
+# After this job runs:
+#   1. ArgoCD is installed in the cluster
+#   2. This GitLab repo is registered as a source
+#   3. ArgoCD Applications for each environment are applied
+#   4. Auto-sync is enabled — ArgoCD will continuously reconcile
+
+variables:
+  ARGOCD_NAMESPACE: argocd
+  ARGOCD_HELM_VERSION: "7.4.5"
+
+.argocd_before: &argocd_before
+  before_script:
+    - apk add --no-cache curl bash
+    - mkdir -p ~/.kube
+    - echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+
+argocd:install:
+  stage: provision
+  image: alpine/helm:3.15
+  <<: *argocd_before
+  script:
+    - helm repo add argo https://argoproj.github.io/argo-helm
+    - helm repo update
+    - kubectl create namespace $ARGOCD_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    - |
+      helm upgrade --install argocd argo/argo-cd \
+        --namespace $ARGOCD_NAMESPACE \
+        --version $ARGOCD_HELM_VERSION \
+        --set server.service.type=ClusterIP \
+        --set configs.params."server\.insecure"=true \
+        --wait --timeout 10m
+    - echo "ArgoCD installed. Initial admin password:"
+    - kubectl -n $ARGOCD_NAMESPACE get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+  when: manual
+  allow_failure: false
+  environment:
+    name: argocd-bootstrap
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+argocd:register-repo:
+  stage: provision
+  image: alpine/helm:3.15
+  <<: *argocd_before
+  script:
+    - |
+      # Download ArgoCD CLI
+      curl -sSL -o /usr/local/bin/argocd \
+        https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+      chmod +x /usr/local/bin/argocd
+    - |
+      # Port-forward ArgoCD server (background)
+      kubectl -n $ARGOCD_NAMESPACE port-forward svc/argocd-server 8080:80 &
+      sleep 5
+    - |
+      ARGOCD_PASSWORD=$(kubectl -n $ARGOCD_NAMESPACE get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)
+      argocd login localhost:8080 --username admin --password $ARGOCD_PASSWORD --insecure
+    - |
+      # Register this GitLab repo with a deploy token
+      argocd repo add $GITOPS_REPO_URL \
+        --username "argocd" \
+        --password "$GITLAB_TOKEN" \
+        --insecure-skip-server-verification
+    - echo "Repository registered. ArgoCD will now track $GITOPS_REPO_URL"
+  needs:
+    - argocd:install
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

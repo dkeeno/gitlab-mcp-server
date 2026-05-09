@@ -1,0 +1,56 @@
+# Security scanning template — include in .gitlab-ci.yml via:
+#   include:
+#     - local: templates/gitlab-ci/security.yml
+#
+# Or use the managed GitLab templates directly:
+#   include:
+#     - template: Security/SAST.gitlab-ci.yml
+#     - template: Security/Secret-Detection.gitlab-ci.yml
+#     - template: Security/Dependency-Scanning.gitlab-ci.yml
+#     - template: Security/Container-Scanning.gitlab-ci.yml
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+  - template: Security/Dependency-Scanning.gitlab-ci.yml
+
+# SAST runs automatically via the included template.
+# Override variables here if needed:
+variables:
+  SAST_EXCLUDED_PATHS: "spec,test,tests,tmp,node_modules,.git"
+  DS_EXCLUDED_PATHS: "spec,test,tests,tmp"
+
+# Container scanning — enable when you push Docker images.
+# Requires CI_REGISTRY_IMAGE to be set.
+container_scanning:
+  stage: security
+  variables:
+    CS_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: $CONTAINER_SCANNING_DISABLED
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# DAST — enable after staging is deployed.
+# Set DAST_WEBSITE to your staging URL.
+# DAST runs ZAP active scan — may take 10-20 minutes.
+dast:
+  stage: dast
+  variables:
+    DAST_WEBSITE: $STAGING_URL
+    DAST_FULL_SCAN_ENABLED: "true"
+    DAST_BROWSER_SCAN: "false"
+  artifacts:
+    paths:
+      - gl-dast-report.json
+    reports:
+      dast: gl-dast-report.json
+  rules:
+    - if: $DAST_DISABLED
+      when: never
+    - if: $STAGING_URL == null || $STAGING_URL == ""
+      when: never
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "main"

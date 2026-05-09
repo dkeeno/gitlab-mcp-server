@@ -1,0 +1,70 @@
+# Terraform plan + apply stages for GitLab CI.
+# All provisioning runs INSIDE GitLab pipelines — not locally.
+#
+# Required CI/CD variables (Settings → CI/CD → Variables, masked + protected):
+#   AWS_ACCESS_KEY_ID       (for EKS/S3 state backend)
+#   AWS_SECRET_ACCESS_KEY
+#   AWS_DEFAULT_REGION
+#   TF_STATE_BUCKET         (S3 bucket for remote state)
+#   TF_STATE_KEY            (e.g. 'eks/terraform.tfstate')
+#   TF_STATE_REGION         (region for state bucket)
+#
+# Usage: include this file and set TERRAFORM_DIR variable.
+
+variables:
+  TERRAFORM_DIR: infrastructure
+  TF_IMAGE: hashicorp/terraform:1.8
+
+.tf_before_script: &tf_before_script
+  before_script:
+    - cd $TERRAFORM_DIR
+    - terraform init
+        -backend-config="bucket=$TF_STATE_BUCKET"
+        -backend-config="key=$TF_STATE_KEY"
+        -backend-config="region=$TF_STATE_REGION"
+        -input=false
+
+terraform:validate:
+  stage: validate
+  image: $TF_IMAGE
+  <<: *tf_before_script
+  script:
+    - terraform validate
+    - terraform fmt -check -recursive
+  rules:
+    - changes: ["$TERRAFORM_DIR/**/*"]
+
+terraform:plan:
+  stage: provision
+  image: $TF_IMAGE
+  <<: *tf_before_script
+  script:
+    - terraform plan -out=tfplan -input=false -detailed-exitcode
+  artifacts:
+    paths:
+      - $TERRAFORM_DIR/tfplan
+      - $TERRAFORM_DIR/plan.json
+    expire_in: 1 week
+    reports:
+      terraform: $TERRAFORM_DIR/plan.json
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: ["$TERRAFORM_DIR/**/*"]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: ["$TERRAFORM_DIR/**/*"]
+
+terraform:apply:
+  stage: provision
+  image: $TF_IMAGE
+  <<: *tf_before_script
+  script:
+    - terraform apply -input=false tfplan
+  dependencies:
+    - terraform:plan
+  needs:
+    - terraform:plan
+  when: manual            # require manual approval in GitLab UI
+  allow_failure: false
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: ["$TERRAFORM_DIR/**/*"]

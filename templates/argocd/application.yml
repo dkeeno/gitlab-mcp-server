@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ APP_NAME }}-{{ ENVIRONMENT }}
+  namespace: argocd
+  labels:
+    environment: {{ ENVIRONMENT }}
+    managed-by: gitlab-devops-mcp
+  # Cascade delete — removing this Application also removes K8s resources
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: {{ GITOPS_REPO_URL }}
+    targetRevision: main
+    path: gitops/environments/{{ ENVIRONMENT }}
+    helm:
+      valueFiles:
+        - values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ ENVIRONMENT }}
+
+  syncPolicy:
+    automated:
+      prune: true       # delete resources removed from git
+      selfHeal: true    # revert manual changes in cluster
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

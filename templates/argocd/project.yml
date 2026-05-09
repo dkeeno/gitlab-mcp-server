@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ PROJECT_NAME }}
+  namespace: argocd
+spec:
+  description: "{{ PROJECT_NAME }} project — managed by gitlab-devops MCP"
+
+  # Allow syncing from this GitLab repo only
+  sourceRepos:
+    - {{ GITOPS_REPO_URL }}
+
+  # Allow deploying to these namespaces
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: staging
+    - server: https://kubernetes.default.svc
+      namespace: production
+
+  # Allowed resource types
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: StatefulSet
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: ServiceAccount
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+
+  # RBAC — project admins can sync; readers can view
+  roles:
+    - name: project-admin
+      description: "Can sync and manage all apps in this project"
+      policies:
+        - p, proj:{{ PROJECT_NAME }}:project-admin, applications, *, {{ PROJECT_NAME }}/*, allow
+      groups:
+        - {{ GITLAB_GROUP }}
+
+    - name: readonly
+      description: "Read-only access to all apps"
+      policies:
+        - p, proj:{{ PROJECT_NAME }}:readonly, applications, get, {{ PROJECT_NAME }}/*, allow
